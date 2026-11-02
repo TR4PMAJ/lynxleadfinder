@@ -15,10 +15,12 @@ A small-business prospecting dashboard using OpenStreetMap community data and Cl
 1. In Cloudflare, create or open a **Pages** project connected to this GitHub repository (not a Workers project).
 2. Select the `main` branch.
 3. Set the framework preset to **None**.
-4. Leave the build command blank and set the build output directory to `.` (the repository root).
+4. Leave the build command blank and set the build output directory to `public`.
 5. Save and deploy. No API key, secret, or billing configuration is needed.
 
-**Important:** Do not use `npx wrangler deploy` as the build or deploy command. This repository is a Pages project with Pages Functions. Cloudflare Pages handles Git deployments automatically; for CLI deployment use `npx wrangler pages deploy . --project-name <your-pages-project-name>`.
+The static website is in `public/`. The Pages Function stays in the repository-root `functions/` folder, where Cloudflare expects it.
+
+**Important:** Do not use `npx wrangler deploy`; that deploys a Worker and does not deploy this Pages Function project. For a CLI/Builds deploy command use `npx wrangler pages deploy public --project-name <your-pages-project-name>`.
 
 The `functions/api/search.js` file handles requests to `/api/search`.
 
