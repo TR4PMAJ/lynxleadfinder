@@ -133,6 +133,8 @@
     }
     const njCities=["newark","jersey city","paterson","elizabeth","edison","camden","trenton","cherry hill","hoboken","atlantic city","princeton","toms river","clifton","passaic","new brunswick","bayonne","marlton","vineland","union city","hackensack"];
     if(njCities.some(city=>q.includes(normalizeText(city)))) return "NJ";
+    const unsupportedCodes=new Set(["al","ak","az","ar","ca","co","ct","de","fl","ga","hi","id","il","in","ia","ks","ky","la","me","md","ma","mi","mn","ms","mo","mt","ne","nv","nh","nm","ny","nc","nd","oh","ok","or","ri","sc","sd","tn","tx","ut","vt","va","wa","wv","wi","wy","dc"]);
+    if(tokens.some(token=>unsupportedCodes.has(token))) return "UNSUPPORTED";
     const paCities=["philadelphia","pittsburgh","allentown","erie","reading","scranton","bethlehem","lancaster","harrisburg","york","state college","wilkes barre","altoona","johnstown","chester","norristown","king of prussia","west chester","pottstown","hazleton"];
     if(paCities.some(city=>q.includes(normalizeText(city)))) return "PA";
     return "PA";
@@ -159,7 +161,7 @@
     }
     // Address metadata can occasionally be incomplete; search all of the selected
     // state rather than incorrectly claiming that no matching businesses exist.
-    const usedFallback=selected.length===0;
+    const usedFallback=selected.length===0&&!zip;
     if(usedFallback) selected=region.tiles.slice();
     return {tiles:selected,usedFallback};
   }
@@ -208,11 +210,16 @@
       const location=$("location").value.trim();
       const stateCode=findState(location);
       const region=manifest.regions.find(item=>item.code===stateCode);
-      if(!region) throw new Error("This region is not in the current index. Available states: "+manifest.regions.map(item=>item.name).join(", ")+".");
+      if(!region) throw new Error(stateCode==="UNSUPPORTED"?"This state is not in the current index yet. Available states: "+manifest.regions.map(item=>item.name).join(", ")+".":"No regional index is available for this location.");
       const selection=selectTiles(region,location);
-      if(!selection.tiles.length) throw new Error("No data tiles are available for "+region.name+". Run the GitHub Actions refresh workflow.");
+      if(!selection.tiles.length) throw new Error("No data tile was found for that ZIP code in "+region.name+". Check the ZIP code or try a city.");
       btn.textContent="Loading "+selection.tiles.length+" data tiles…";
-      const tileArrays=await Promise.all(selection.tiles.map(tile=>loadTile(tile.file)));
+      const tileArrays=[];
+      for(let offset=0;offset<selection.tiles.length;offset+=5){
+        const batch=selection.tiles.slice(offset,offset+5);
+        tileArrays.push(...await Promise.all(batch.map(tile=>loadTile(tile.file))));
+        btn.textContent="Loading "+Math.min(offset+batch.length,selection.tiles.length)+"/"+selection.tiles.length+" data tiles…";
+      }
       const allPlaces=tileArrays.flat();
       const industry=$("industry").value.trim();
       const selected=allPlaces
