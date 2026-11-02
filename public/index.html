@@ -108,7 +108,7 @@
     const q=normalizeText(query);
     const groups=[
       {match:/barber/,terms:["barber","hair salon","hairdresser"]},
-      {match:/auto detail|car detail/,terms:["auto detailing","car detailing","car wash","auto body","car repair","vehicle repair"]},
+      {match:/auto detail|car detail/,terms:["auto detailing","car detailing","car_detailing","auto_detailing","car wash","auto body","car repair","vehicle repair","vehicle service"]},
       {match:/mechanic|auto repair/,terms:["auto repair","car repair","vehicle repair","automotive repair","mechanic"]},
       {match:/towing/,terms:["towing","tow truck","roadside assistance"]},
       {match:/plumb/,terms:["plumber","plumbing"]},
@@ -143,7 +143,7 @@
       const industry=$("industry").value.trim();
       const location=$("location").value.trim();
       const selected=snapshot.places
-        .filter(place=>categoryMatches(place,industry)&&locationMatches(place,location))
+        .filter(place=>place.operatingStatus!=="permanently_closed"&&categoryMatches(place,industry)&&locationMatches(place,location))
         .sort((a,b)=>Number(Boolean(a.website))-Number(Boolean(b.website))||((b.confidence||0)-(a.confidence||0)))
         .slice(0,Number($("limit").value))
         .map(place=>({
