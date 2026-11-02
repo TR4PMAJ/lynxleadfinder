@@ -1,20 +1,36 @@
 #!/usr/bin/env python3
-"""Normalize a small Overture Places GeoJSON extract for the Lynx Lead Finder."""
+"""Build small, state-aware, compressed Overture Places shards for Cloudflare Pages."""
 
 from __future__ import annotations
 
 import argparse
 import gzip
 import json
+import math
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-MAX_PAGES_ASSET_BYTES = 25 * 1024 * 1024
+MAX_PAGES_ASSET_BYTES = 20 * 1024 * 1024
+INITIAL_TILE_DEGREES = 0.5
+MIN_TILE_DEGREES = 0.125
+
+REGIONS = {
+    "PA": {
+        "name": "Pennsylvania",
+        "bbox": (-80.52, 39.72, -74.69, 42.27),
+        "aliases": {"pa", "pennsylvania", "us-pa"},
+    },
+    "NJ": {
+        "name": "New Jersey",
+        "bbox": (-75.56, 38.92, -73.89, 41.36),
+        "aliases": {"nj", "new jersey", "us-nj"},
+    },
+}
 
 
 def first_value(value: Any) -> str:
-    """Return the first useful string from Overture's scalar/list structures."""
     if isinstance(value, str):
         return value.strip()
     if isinstance(value, list):
@@ -35,12 +51,24 @@ def as_object(value: Any) -> dict[str, Any]:
 
 
 def as_list(value: Any) -> list[Any]:
-    if isinstance(value, list):
-        return value
-    return [value] if value is not None else []
+    return value if isinstance(value, list) else ([value] if value is not None else [])
 
 
-def normalize_feature(feature: dict[str, Any]) -> dict[str, Any] | None:
+def normalize_region(value: str) -> str:
+    text = " ".join(value.casefold().replace("-", " ").split())
+    if text in {"pa", "pennsylvania", "us pa", "united states pa"}:
+        return "PA"
+    if text in {"nj", "new jersey", "us nj", "united states nj"}:
+        return "NJ"
+    return ""
+
+
+def within_bbox(lon: float, lat: float, bbox: tuple[float, float, float, float]) -> bool:
+    west, south, east, north = bbox
+    return west <= lon <= east and south <= lat <= north
+
+
+def normalize_feature(feature: dict[str, Any], region_code: str) -> dict[str, Any] | None:
     props = as_object(feature.get("properties"))
     names = as_object(props.get("names"))
     name = first_value(names.get("primary") or props.get("name"))
@@ -49,13 +77,13 @@ def normalize_feature(feature: dict[str, Any]) -> dict[str, Any] | None:
 
     taxonomy = as_object(props.get("taxonomy"))
     category = first_value(taxonomy.get("primary") or props.get("basic_category"))
-    alternates = as_list(taxonomy.get("alternates"))
     hierarchy = as_list(taxonomy.get("hierarchy"))
-    categories = []
+    alternates = as_list(taxonomy.get("alternates"))
+    categories: list[str] = []
     for item in [category, first_value(props.get("basic_category")), *hierarchy, *alternates]:
-        text = first_value(item)
-        if text and text not in categories:
-            categories.append(text)
+        label = first_value(item)
+        if label and label not in categories:
+            categories.append(label)
 
     addresses = as_list(props.get("addresses"))
     address_obj = as_object(addresses[0]) if addresses else {}
@@ -78,6 +106,10 @@ def normalize_feature(feature: dict[str, Any]) -> dict[str, Any] | None:
     if country and country.upper() not in {"US", "USA", "UNITED STATES"}:
         return None
 
+    explicit_region = normalize_region(region)
+    if explicit_region and explicit_region != region_code:
+        return None
+
     websites = as_list(props.get("websites"))
     phones = as_list(props.get("phones"))
     website = first_value(websites)
@@ -90,6 +122,9 @@ def normalize_feature(feature: dict[str, Any]) -> dict[str, Any] | None:
     try:
         longitude, latitude = float(coordinates[0]), float(coordinates[1])
     except (TypeError, ValueError):
+        return None
+
+    if not within_bbox(longitude, latitude, REGIONS[region_code]["bbox"]):
         return None
 
     raw_sources = as_list(props.get("sources"))
@@ -119,6 +154,7 @@ def normalize_feature(feature: dict[str, Any]) -> dict[str, Any] | None:
         "address": address,
         "locality": locality,
         "region": region,
+        "regionCode": region_code,
         "postcode": postcode,
         "phone": phone,
         "website": website,
@@ -130,75 +166,154 @@ def normalize_feature(feature: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def compress_document(document: dict[str, Any]) -> bytes:
+    raw = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return gzip.compress(raw, compresslevel=9, mtime=0)
+
+
+def tile_bounds(records: list[dict[str, Any]], size: float) -> tuple[int, int, int, int]:
+    lat_ids = [math.floor(row["latitude"] / size) for row in records]
+    lon_ids = [math.floor(row["longitude"] / size) for row in records]
+    return min(lat_ids), min(lon_ids), max(lat_ids), max(lon_ids)
+
+
+def write_tile(
+    region_code: str,
+    records: list[dict[str, Any]],
+    size: float,
+    output_root: Path,
+    manifest_tiles: list[dict[str, Any]],
+) -> None:
+    buckets: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    for record in records:
+        key = (
+            math.floor(record["latitude"] / size),
+            math.floor(record["longitude"] / size),
+        )
+        buckets.setdefault(key, []).append(record)
+
+    for (lat_id, lon_id), tile_records in sorted(buckets.items()):
+        tile_id = f"tile_{lat_id}_{lon_id}"
+        document = {
+            "source": "Overture Maps Places",
+            "region": region_code,
+            "tile": tile_id,
+            "generatedAt": datetime.now(timezone.utc).isoformat(),
+            "count": len(tile_records),
+            "places": tile_records,
+        }
+        compressed = compress_document(document)
+        if len(compressed) > MAX_PAGES_ASSET_BYTES:
+            if size / 2 < MIN_TILE_DEGREES:
+                raise SystemExit(
+                    f"{region_code} {tile_id} is still larger than 20 MiB after subdivision. "
+                    "Reduce the tile size or move the data to a database/object store."
+                )
+            write_tile(region_code, tile_records, size / 2, output_root, manifest_tiles)
+            continue
+
+        relative_path = f"regions/{region_code.lower()}/{tile_id}.json.gz"
+        destination = output_root / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(compressed)
+
+        lat_min = lat_id * size
+        lon_min = lon_id * size
+        manifest_tiles.append({
+            "id": tile_id,
+            "file": relative_path,
+            "count": len(tile_records),
+            "bbox": [lon_min, lat_min, lon_min + size, lat_min + size],
+            "localities": sorted({row["locality"] for row in tile_records if row["locality"]}),
+            "postcodes": sorted({row["postcode"] for row in tile_records if row["postcode"]}),
+        })
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", required=True)
-    parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--input",
+        action="append",
+        required=True,
+        metavar="STATE=PATH",
+        help="Input Overture GeoJSON, for example PA=/tmp/pa.geojson. Repeat for each state.",
+    )
+    parser.add_argument("--output", required=True, help="Output directory, e.g. public/data")
     args = parser.parse_args()
 
-    input_path = Path(args.input)
-    output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_root = Path(args.output)
+    output_root.mkdir(parents=True, exist_ok=True)
+    regions_root = output_root / "regions"
+    if regions_root.exists():
+        shutil.rmtree(regions_root)
+    regions_root.mkdir(parents=True, exist_ok=True)
 
-    with input_path.open("r", encoding="utf-8") as handle:
-        source_doc = json.load(handle)
+    generated_at = datetime.now(timezone.utc).isoformat()
+    manifest_regions = []
 
-    features = source_doc.get("features", [])
-    records: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str]] = set()
+    for input_spec in args.input:
+        if "=" not in input_spec:
+            raise SystemExit(f"Invalid --input value {input_spec!r}; expected STATE=PATH.")
+        region_code, path_text = input_spec.split("=", 1)
+        region_code = region_code.upper()
+        if region_code not in REGIONS:
+            raise SystemExit(f"Unsupported region {region_code!r}. Supported: {', '.join(REGIONS)}.")
 
-    for feature in features:
-        if not isinstance(feature, dict):
-            continue
-        record = normalize_feature(feature)
-        if not record:
-            continue
-        location_key = (record["address"] or record["postcode"] or
-                        f'{record["latitude"]:.5f},{record["longitude"]:.5f}')
-        dedupe_key = (
-            record["name"].casefold().strip(),
-            location_key.casefold().strip(),
-            record["category"].casefold().strip(),
+        input_path = Path(path_text)
+        with input_path.open("r", encoding="utf-8") as handle:
+            source_doc = json.load(handle)
+
+        features = source_doc.get("features", [])
+        records: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for feature in features:
+            if not isinstance(feature, dict):
+                continue
+            record = normalize_feature(feature, region_code)
+            if not record:
+                continue
+            location_key = (
+                record["address"] or record["postcode"] or
+                f'{record["latitude"]:.5f},{record["longitude"]:.5f}'
+            )
+            dedupe_key = (
+                record["name"].casefold().strip(),
+                location_key.casefold().strip(),
+                record["category"].casefold().strip(),
+            )
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            records.append(record)
+
+        records.sort(
+            key=lambda row: (
+                bool(row["website"]),
+                -(row["confidence"] if row["confidence"] is not None else -1),
+                row["name"].casefold(),
+            )
         )
-        if dedupe_key in seen:
-            continue
-        seen.add(dedupe_key)
-        records.append(record)
 
-    # Put records with missing website fields first, then the stronger confidence
-    # signals. Confidence is only a relative quality signal, not a probability.
-    records.sort(
-        key=lambda row: (
-            bool(row["website"]),
-            -(row["confidence"] if row["confidence"] is not None else -1),
-            row["name"].casefold(),
-        )
-    )
+        region_tiles: list[dict[str, Any]] = []
+        write_tile(region_code, records, INITIAL_TILE_DEGREES, output_root, region_tiles)
+        region_tiles.sort(key=lambda item: item["id"])
+        manifest_regions.append({
+            "code": region_code,
+            "name": REGIONS[region_code]["name"],
+            "bbox": list(REGIONS[region_code]["bbox"]),
+            "count": len(records),
+            "tiles": region_tiles,
+        })
+        print(f"{REGIONS[region_code]['name']}: {len(records):,} places in {len(region_tiles)} tiles.")
 
-    document = {
+    manifest = {
         "source": "Overture Maps Places",
-        "area": "Philadelphia metro snapshot",
-        "generatedAt": datetime.now(timezone.utc).isoformat(),
-        "count": len(records),
-        "places": records,
+        "generatedAt": generated_at,
+        "regions": sorted(manifest_regions, key=lambda item: item["code"]),
     }
-
-    raw = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    with output_path.open("wb") as raw_handle:
-        with gzip.GzipFile(fileobj=raw_handle, mode="wb", compresslevel=9, mtime=0) as gz:
-            gz.write(raw)
-
-    output_size = output_path.stat().st_size
-    print(f"Normalized {len(records):,} named places.")
-    print(f"Compressed snapshot: {output_size:,} bytes ({output_size / 1024 / 1024:.2f} MiB).")
-
-    if not records:
-        raise SystemExit("No named place records were found; refusing to publish an empty snapshot.")
-    if output_size > MAX_PAGES_ASSET_BYTES:
-        raise SystemExit(
-            "The snapshot is larger than Cloudflare Pages' 25 MiB per-file limit. "
-            "We need to narrow the area or store the index in a database/object store."
-        )
+    manifest_path = output_root / "regions.json"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    print(f"Wrote manifest: {manifest_path}")
 
 
 if __name__ == "__main__":
