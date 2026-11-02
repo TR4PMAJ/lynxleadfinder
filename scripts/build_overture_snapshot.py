@@ -1,31 +1,32 @@
 #!/usr/bin/env python3
-"""Build small, state-aware, compressed Overture Places shards for Cloudflare Pages."""
+"""Stream Overture Places into small state-aware static search tiles."""
 
 from __future__ import annotations
 
 import argparse
 import gzip
-import json
 import math
 import shutil
+from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
+
+import ijson
+import orjson
 
 MAX_PAGES_ASSET_BYTES = 20 * 1024 * 1024
-INITIAL_TILE_DEGREES = 0.5
-MIN_TILE_DEGREES = 0.125
+TILE_DEGREES = 0.125
+MAX_OPEN_HANDLES = 48
 
 REGIONS = {
     "PA": {
         "name": "Pennsylvania",
         "bbox": (-80.52, 39.72, -74.69, 42.27),
-        "aliases": {"pa", "pennsylvania", "us-pa"},
     },
     "NJ": {
         "name": "New Jersey",
         "bbox": (-75.56, 38.92, -73.89, 41.36),
-        "aliases": {"nj", "new jersey", "us-nj"},
     },
 }
 
@@ -89,7 +90,8 @@ def normalize_feature(feature: dict[str, Any], region_code: str) -> dict[str, An
     address_obj = as_object(addresses[0]) if addresses else {}
     locality = first_value(address_obj.get("locality"))
     region = first_value(address_obj.get("region"))
-    postcode = first_value(address_obj.get("postcode"))
+    postcode_raw = first_value(address_obj.get("postcode"))
+    postcode = postcode_raw[:5] if len(postcode_raw) >= 5 and postcode_raw[:5].isdigit() else postcode_raw
     country = first_value(address_obj.get("country"))
     address = first_value(address_obj.get("freeform"))
     if not address:
@@ -105,15 +107,9 @@ def normalize_feature(feature: dict[str, Any], region_code: str) -> dict[str, An
 
     if country and country.upper() not in {"US", "USA", "UNITED STATES"}:
         return None
-
     explicit_region = normalize_region(region)
     if explicit_region and explicit_region != region_code:
         return None
-
-    websites = as_list(props.get("websites"))
-    phones = as_list(props.get("phones"))
-    website = first_value(websites)
-    phone = first_value(phones)
 
     geometry = as_object(feature.get("geometry"))
     coordinates = as_list(geometry.get("coordinates"))
@@ -123,13 +119,13 @@ def normalize_feature(feature: dict[str, Any], region_code: str) -> dict[str, An
         longitude, latitude = float(coordinates[0]), float(coordinates[1])
     except (TypeError, ValueError):
         return None
-
     if not within_bbox(longitude, latitude, REGIONS[region_code]["bbox"]):
         return None
 
-    raw_sources = as_list(props.get("sources"))
+    websites = as_list(props.get("websites"))
+    phones = as_list(props.get("phones"))
     sources = []
-    for source in raw_sources:
+    for source in as_list(props.get("sources")):
         source_obj = as_object(source)
         dataset = first_value(source_obj.get("dataset"))
         license_name = first_value(source_obj.get("license"))
@@ -156,8 +152,8 @@ def normalize_feature(feature: dict[str, Any], region_code: str) -> dict[str, An
         "region": region,
         "regionCode": region_code,
         "postcode": postcode,
-        "phone": phone,
-        "website": website,
+        "phone": first_value(phones),
+        "website": first_value(websites),
         "latitude": latitude,
         "longitude": longitude,
         "confidence": confidence,
@@ -166,67 +162,92 @@ def normalize_feature(feature: dict[str, Any], region_code: str) -> dict[str, An
     }
 
 
-def compress_document(document: dict[str, Any]) -> bytes:
-    raw = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    return gzip.compress(raw, compresslevel=9, mtime=0)
+class TileWriter:
+    """Stream records into tile JSON files while keeping few handles open."""
 
+    def __init__(self, region_code: str, output_root: Path, generated_at: str):
+        self.region_code = region_code
+        self.output_root = output_root
+        self.generated_at = generated_at
+        self.temp_root = output_root / ".tile-work" / region_code.lower()
+        self.temp_root.mkdir(parents=True, exist_ok=True)
+        self.handles: OrderedDict[str, BinaryIO] = OrderedDict()
+        self.counts: dict[str, int] = {}
+        self.localities: dict[str, set[str]] = {}
+        self.postcodes: dict[str, set[str]] = {}
 
-def tile_bounds(records: list[dict[str, Any]], size: float) -> tuple[int, int, int, int]:
-    lat_ids = [math.floor(row["latitude"] / size) for row in records]
-    lon_ids = [math.floor(row["longitude"] / size) for row in records]
-    return min(lat_ids), min(lon_ids), max(lat_ids), max(lon_ids)
+    def _get_handle(self, tile_id: str) -> BinaryIO:
+        if tile_id in self.handles:
+            self.handles.move_to_end(tile_id)
+            return self.handles[tile_id]
+        if len(self.handles) >= MAX_OPEN_HANDLES:
+            _, oldest = self.handles.popitem(last=False)
+            oldest.close()
 
+        path = self.temp_root / f"{tile_id}.json"
+        mode = "ab" if self.counts.get(tile_id, 0) else "wb"
+        handle = path.open(mode)
+        if mode == "wb":
+            handle.write(b'{"places":[')
+        self.handles[tile_id] = handle
+        return handle
 
-def write_tile(
-    region_code: str,
-    records: list[dict[str, Any]],
-    size: float,
-    output_root: Path,
-    manifest_tiles: list[dict[str, Any]],
-) -> None:
-    buckets: dict[tuple[int, int], list[dict[str, Any]]] = {}
-    for record in records:
-        key = (
-            math.floor(record["latitude"] / size),
-            math.floor(record["longitude"] / size),
-        )
-        buckets.setdefault(key, []).append(record)
-
-    for (lat_id, lon_id), tile_records in sorted(buckets.items()):
+    def add(self, record: dict[str, Any]) -> None:
+        lat_id = math.floor(record["latitude"] / TILE_DEGREES)
+        lon_id = math.floor(record["longitude"] / TILE_DEGREES)
         tile_id = f"tile_{lat_id}_{lon_id}"
-        document = {
-            "source": "Overture Maps Places",
-            "region": region_code,
-            "tile": tile_id,
-            "generatedAt": datetime.now(timezone.utc).isoformat(),
-            "count": len(tile_records),
-            "places": tile_records,
-        }
-        compressed = compress_document(document)
-        if len(compressed) > MAX_PAGES_ASSET_BYTES:
-            if size / 2 < MIN_TILE_DEGREES:
+        count = self.counts.get(tile_id, 0)
+        handle = self._get_handle(tile_id)
+        if count:
+            handle.write(b",")
+        handle.write(orjson.dumps(record))
+        self.counts[tile_id] = count + 1
+        if record["locality"]:
+            self.localities.setdefault(tile_id, set()).add(record["locality"])
+        if record["postcode"]:
+            self.postcodes.setdefault(tile_id, set()).add(record["postcode"])
+
+    def finish(self) -> tuple[list[dict[str, Any]], int]:
+        for handle in self.handles.values():
+            handle.close()
+        self.handles.clear()
+
+        tiles: list[dict[str, Any]] = []
+        total_bytes = 0
+        destination_root = self.output_root / "regions" / self.region_code.lower()
+        destination_root.mkdir(parents=True, exist_ok=True)
+
+        for tile_id, count in sorted(self.counts.items()):
+            temp_file = self.temp_root / f"{tile_id}.json"
+            with temp_file.open("ab") as handle:
+                handle.write(b"]}")
+            relative_path = f"regions/{self.region_code.lower()}/{tile_id}.json.gz"
+            output_file = self.output_root / relative_path
+            with temp_file.open("rb") as source, output_file.open("wb") as destination:
+                with gzip.GzipFile(fileobj=destination, mode="wb", compresslevel=9, mtime=0) as compressed:
+                    shutil.copyfileobj(source, compressed, length=1024 * 1024)
+
+            size = output_file.stat().st_size
+            if size > MAX_PAGES_ASSET_BYTES:
                 raise SystemExit(
-                    f"{region_code} {tile_id} is still larger than 20 MiB after subdivision. "
-                    "Reduce the tile size or move the data to a database/object store."
+                    f"{self.region_code} {tile_id} is {size / 1024 / 1024:.1f} MiB, above the Pages file limit. "
+                    "Reduce TILE_DEGREES before publishing."
                 )
-            write_tile(region_code, tile_records, size / 2, output_root, manifest_tiles)
-            continue
-
-        relative_path = f"regions/{region_code.lower()}/{tile_id}.json.gz"
-        destination = output_root / relative_path
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(compressed)
-
-        lat_min = lat_id * size
-        lon_min = lon_id * size
-        manifest_tiles.append({
-            "id": tile_id,
-            "file": relative_path,
-            "count": len(tile_records),
-            "bbox": [lon_min, lat_min, lon_min + size, lat_min + size],
-            "localities": sorted({row["locality"] for row in tile_records if row["locality"]}),
-            "postcodes": sorted({row["postcode"] for row in tile_records if row["postcode"]}),
-        })
+            total_bytes += size
+            lat_id, lon_id = (int(value) for value in tile_id.removeprefix("tile_").split("_"))
+            lat_min = lat_id * TILE_DEGREES
+            lon_min = lon_id * TILE_DEGREES
+            tiles.append({
+                "id": tile_id,
+                "file": relative_path,
+                "count": count,
+                "bbox": [lon_min, lat_min, lon_min + TILE_DEGREES, lat_min + TILE_DEGREES],
+                "localities": sorted(self.localities.get(tile_id, set())),
+                "postcodes": sorted(self.postcodes.get(tile_id, set())),
+            })
+            temp_file.unlink()
+        shutil.rmtree(self.temp_root, ignore_errors=True)
+        return tiles, total_bytes
 
 
 def main() -> None:
@@ -246,7 +267,7 @@ def main() -> None:
     regions_root = output_root / "regions"
     if regions_root.exists():
         shutil.rmtree(regions_root)
-    regions_root.mkdir(parents=True, exist_ok=True)
+    shutil.rmtree(output_root / ".tile-work", ignore_errors=True)
 
     generated_at = datetime.now(timezone.utc).isoformat()
     manifest_regions = []
@@ -260,51 +281,38 @@ def main() -> None:
             raise SystemExit(f"Unsupported region {region_code!r}. Supported: {', '.join(REGIONS)}.")
 
         input_path = Path(path_text)
-        with input_path.open("r", encoding="utf-8") as handle:
-            source_doc = json.load(handle)
+        writer = TileWriter(region_code, output_root, generated_at)
+        count = 0
+        print(f"Streaming {REGIONS[region_code]['name']} records from {input_path}...", flush=True)
+        with input_path.open("rb") as handle:
+            for feature in ijson.items(handle, "features.item"):
+                if not isinstance(feature, dict):
+                    continue
+                record = normalize_feature(feature, region_code)
+                if record:
+                    writer.add(record)
+                    count += 1
+                    if count % 100_000 == 0:
+                        print(f"{REGIONS[region_code]['name']}: normalized {count:,} places...", flush=True)
 
-        features = source_doc.get("features", [])
-        records: list[dict[str, Any]] = []
-        seen: set[tuple[str, str, str]] = set()
-        for feature in features:
-            if not isinstance(feature, dict):
-                continue
-            record = normalize_feature(feature, region_code)
-            if not record:
-                continue
-            location_key = (
-                record["address"] or record["postcode"] or
-                f'{record["latitude"]:.5f},{record["longitude"]:.5f}'
-            )
-            dedupe_key = (
-                record["name"].casefold().strip(),
-                location_key.casefold().strip(),
-                record["category"].casefold().strip(),
-            )
-            if dedupe_key in seen:
-                continue
-            seen.add(dedupe_key)
-            records.append(record)
+        if count == 0:
+            raise SystemExit(f"No named places were found for {REGIONS[region_code]['name']}; refusing an empty index.")
 
-        records.sort(
-            key=lambda row: (
-                bool(row["website"]),
-                -(row["confidence"] if row["confidence"] is not None else -1),
-                row["name"].casefold(),
-            )
-        )
-
-        region_tiles: list[dict[str, Any]] = []
-        write_tile(region_code, records, INITIAL_TILE_DEGREES, output_root, region_tiles)
+        region_tiles, bytes_written = writer.finish()
         region_tiles.sort(key=lambda item: item["id"])
         manifest_regions.append({
             "code": region_code,
             "name": REGIONS[region_code]["name"],
             "bbox": list(REGIONS[region_code]["bbox"]),
-            "count": len(records),
+            "count": count,
+            "compressedBytes": bytes_written,
             "tiles": region_tiles,
         })
-        print(f"{REGIONS[region_code]['name']}: {len(records):,} places in {len(region_tiles)} tiles.")
+        print(
+            f"{REGIONS[region_code]['name']}: {count:,} places, "
+            f"{len(region_tiles)} tiles, {bytes_written / 1024 / 1024:.1f} MiB compressed.",
+            flush=True,
+        )
 
     manifest = {
         "source": "Overture Maps Places",
@@ -312,8 +320,8 @@ def main() -> None:
         "regions": sorted(manifest_regions, key=lambda item: item["code"]),
     }
     manifest_path = output_root / "regions.json"
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    print(f"Wrote manifest: {manifest_path}")
+    manifest_path.write_bytes(orjson.dumps(manifest))
+    print(f"Wrote manifest: {manifest_path}", flush=True)
 
 
 if __name__ == "__main__":
