@@ -2,6 +2,11 @@ name: Refresh Pennsylvania and New Jersey Overture index
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/build_overture_snapshot.py"
+      - ".github/workflows/refresh-overture.yml"
   schedule:
     - cron: "17 9 5 * *"
 
