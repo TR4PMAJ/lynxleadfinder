@@ -123,9 +123,9 @@
   function findState(location){
     const q=normalizeText(location);
     const tokens=q.split(" ");
-    const zip=(location.match(/\\b\\d{5}\\b/)||[])[0]||"";
-    if(/\\b(pennsylvania|pa)\\b/.test(q)) return "PA";
-    if(/\\b(new jersey|nj)\\b/.test(q)) return "NJ";
+    const zip=(location.match(/[0-9]{5}/)||[])[0]||"";
+    if(tokens.includes("pa")||q.includes("pennsylvania")) return "PA";
+    if(tokens.includes("nj")||q.includes("new jersey")) return "NJ";
     if(zip){
       const first3=Number(zip.slice(0,3));
       if(first3>=150&&first3<=196) return "PA";
@@ -140,11 +140,11 @@
 
   function locationTerms(location,stateCode){
     const stateWords=new Set(["pennsylvania","pa","new","jersey","nj","usa","united","states","city","metro","area"]);
-    return normalizeText(location).split(" ").filter(term=>term&&!stateWords.has(term)&&!/^\\d{5}$/.test(term)).map(term=>term==="philly"?"philadelphia":term);
+    return normalizeText(location).split(" ").filter(term=>term&&!stateWords.has(term)&&!(term.length===5&&/^[0-9]+$/.test(term))).map(term=>term==="philly"?"philadelphia":term);
   }
 
   function selectTiles(region,location){
-    const zip=(location.match(/\\b\\d{5}\\b/)||[])[0]||"";
+    const zip=(location.match(/[0-9]{5}/)||[])[0]||"";
     const terms=locationTerms(location,region.code);
     let selected;
     if(zip){
@@ -192,7 +192,7 @@
   }
 
   function locationMatches(place,location){
-    const zip=(location.match(/\\b\\d{5}\\b/)||[])[0]||"";
+    const zip=(location.match(/[0-9]{5}/)||[])[0]||"";
     if(zip) return String(place.postcode||"")===zip;
     const terms=locationTerms(location,place.regionCode);
     if(!terms.length) return true;
