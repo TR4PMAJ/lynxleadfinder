@@ -1,50 +1,56 @@
 # Lynx & Co. Lead Finder
 
-A small-business prospecting dashboard using OpenStreetMap community data and Cloudflare Pages Functions. No Google Places API key or billing account is required.
+A static prospecting dashboard using a Philadelphia-area snapshot of Overture Maps Places. It does not call Google Places, Nominatim, or Overpass when a user searches.
 
-## Features
+## How search works
 
-- Search local businesses by type and location
-- Show business name, available phone/address, website tag and map link
-- Filter listings where no website is recorded in OpenStreetMap
-- Export current in-memory results to CSV
-- Keep external service requests in a server-side Pages Function
+- The browser downloads one compressed Philadelphia-area business snapshot and searches it locally.
+- Search filters business category and locality/ZIP, prioritizing records with no website recorded.
+- The snapshot includes a business name, category, available address, phone, website, coordinates, confidence score, and source identifiers.
+- Results and CSV export stay in browser memory for the current session.
 
-## Deploy to Cloudflare Pages
+## First-time setup
 
-1. In Cloudflare, create or open a **Pages** project connected to this GitHub repository (not a Workers project).
-2. Select the `main` branch.
-3. Set the framework preset to **None**.
-4. Leave the build command blank and set the build output directory to `public`.
-5. Save and deploy. No API key, secret, or billing configuration is needed.
+1. Open the repository's **Actions** tab on GitHub.
+2. Select **Refresh Philadelphia Overture business index**.
+3. Click **Run workflow** on the `main` branch.
+4. Wait for the workflow to finish. It downloads a regional Overture Places extract, normalizes it, compresses it, and commits `public/data/philadelphia-places.json.gz`.
+5. The new commit should trigger a Cloudflare Pages deployment. Once that deployment succeeds, refresh the website and search.
 
-The static website is in `public/`. The Pages Function stays in the repository-root `functions/` folder, where Cloudflare expects it.
+The workflow also runs monthly. No API key, Google billing account, public map-search API, or paid business-data API is required.
 
-**Important:** For this Git-connected Pages project, do not enter a Wrangler deploy command. Cloudflare automatically builds and deploys each push to `main`. The `npx wrangler pages deploy public --project-name <your-pages-project-name>` command is only for a separate manual CLI deployment workflow.
+## Cloudflare Pages settings
 
-The `functions/api/search.js` file handles requests to `/api/search`.
+- Project type: **Pages**, connected to this GitHub repository
+- Production branch: `main`
+- Framework preset: `None`
+- Build command: `exit 0`
+- Build output directory: `public`
+- Root directory: repository root (default)
 
-## Run locally
+Do not use `npx wrangler deploy`; that is a Workers deployment command. This project is a Git-connected Cloudflare Pages site.
 
-Install Node.js and Wrangler, then run:
+## Refresh and coverage
 
-```bash
-npm install -D wrangler
-npx wrangler pages dev public
-```
+The current snapshot covers a Philadelphia metro bounding box (west -75.35, south 39.80, east -74.85, north 40.25). Searches outside this area will not return results. The upstream Overture Places theme is released monthly, and this repository's workflow refreshes the local snapshot monthly.
 
-No `.dev.vars` file is required.
+The build script checks that the compressed snapshot is below Cloudflare Pages' 25 MiB per-file asset limit. If the area extract grows beyond that, the workflow stops instead of committing a broken Pages asset; the index would need to move to a database or object store.
 
-## Data sources and limitations
+## Data quality and limitations
 
-- Location lookup: OpenStreetMap Nominatim.
-- Business/map data: OpenStreetMap Overpass API.
-- Search coverage depends on what OpenStreetMap contributors have mapped. It is not a complete business directory.
-- “No website listed” means no website tag was present in the returned map record. It does not prove the business has no website.
-- Common categories include barbers, salons, restaurants, cafes, auto repair, plumbers, electricians, dentists and gyms. Other terms use a name match and may return fewer relevant results.
-- The search tries the global Private.coffee Overpass instance first and the FOSSGIS instance as a fallback for server errors. Public community endpoints are shared resources and may rate-limit or temporarily reject requests. If rate-limited, wait at least 30 seconds before trying again; avoid rapid repeated searches or bulk automated querying.
-- Results are held in browser memory and cleared when the page is refreshed. CSV export is only for the current session.
+- This is a monthly snapshot, not a live business directory.
+- A missing website or phone means the source snapshot has no value recorded for that field. It does not prove the business lacks a website or phone.
+- Overture documents known data-quality issues including duplicates, junk records, and incomplete attributes. The build script removes exact duplicates by name/address/category, but it cannot independently verify a business.
+- The confidence score is a relative source-quality signal, not a calibrated probability.
+- Verify each prospect's identity, location, website, and contact details independently before outreach.
 
 ## Attribution and licensing
 
-Map data © OpenStreetMap contributors, available under the Open Database License (ODbL). Review the OpenStreetMap Foundation's Nominatim and Overpass usage policies before scaling or commercializing this service. Public community endpoints are not an unlimited production API.
+The Overture Places theme does not contain OpenStreetMap data. Overture lists source-specific licenses including CDLA-Permissive-2.0, Apache-2.0 (Foursquare), and CC0. This project includes the CDLA-Permissive-2.0 and Apache-2.0 license texts, the Foursquare NOTICE, and a summary of source/modification details:
+
+- `public/OVERTURE-NOTICE.txt`
+- `public/data/CDLA-Permissive-2.0.txt`
+- `public/data/Apache-2.0.txt`
+- `public/data/NOTICE.txt`
+
+Review those notices and Overture's current attribution/licensing documentation before redistributing the snapshot or building a commercial product on it.
