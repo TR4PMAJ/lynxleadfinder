@@ -24,6 +24,9 @@ jobs:
       - name: Install Overture downloader
         run: python -m pip install --upgrade overturemaps
 
+      - name: Validate snapshot builder syntax
+        run: python -m py_compile scripts/build_overture_snapshot.py
+
       - name: Download Philadelphia-area Places extract
         run: |
           overturemaps download \
