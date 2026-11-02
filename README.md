@@ -30,7 +30,7 @@ Install Node.js and Wrangler, then run:
 
 ```bash
 npm install -D wrangler
-npx wrangler pages dev .
+npx wrangler pages dev public
 ```
 
 No `.dev.vars` file is required.
