@@ -51,8 +51,9 @@ def normalize_feature(feature: dict[str, Any]) -> dict[str, Any] | None:
     taxonomy = as_object(props.get("taxonomy"))
     category = first_value(taxonomy.get("primary") or props.get("basic_category"))
     alternates = as_list(taxonomy.get("alternates"))
+    hierarchy = as_list(taxonomy.get("hierarchy"))
     categories = []
-    for item in [category, first_value(props.get("basic_category")), *alternates]:
+    for item in [category, first_value(props.get("basic_category")), *hierarchy, *alternates]:
         text = first_value(item)
         if text and text not in categories:
             categories.append(text)
@@ -125,6 +126,7 @@ def normalize_feature(feature: dict[str, Any]) -> dict[str, Any] | None:
         "latitude": latitude,
         "longitude": longitude,
         "confidence": confidence,
+        "operatingStatus": first_value(props.get("operating_status")),
         "sources": sources,
     }
 
