@@ -24,10 +24,10 @@
   <main class="shell">
     <header class="top">
       <div class="brand"><div class="mark">L</div><div>LYNX & CO.<small>WEB STUDIO · LEAD INTELLIGENCE</small></div></div>
-      <div class="status">Lead workspace</div>
+      <div class="status">OpenStreetMap · No API key</div>
     </header>
     <h1>Find your next <span>client.</span></h1>
-    <p class="intro">Discover local businesses, spot listings with no website provided, and organize your outreach pipeline in one place.</p>
+    <p class="intro">Discover local businesses, identify listings without a website link, and organize your outreach prospects.</p>
 
     <section class="panel">
       <h2>Search businesses</h2>
@@ -38,7 +38,7 @@
         <button id="searchBtn" type="submit">Search leads ↗</button>
       </form>
       <div id="message" class="message" role="status"></div>
-      <p class="notice">Search results come from Google Places. “No website listed” means Google did not return a website for that listing; verify independently before contacting the business.</p>
+      <p class="notice">Search results come from OpenStreetMap community data. “No website listed” means no website tag was found in the map data; verify independently before contacting the business.</p>
     </section>
 
     <section class="stats">
@@ -59,7 +59,7 @@
     <section class="tablewrap" style="margin-top:12px">
       <table><thead><tr><th>Business</th><th>Phone</th><th>Address</th><th>Website status</th><th>Listing</th></tr></thead><tbody id="results"><tr><td colspan="5" class="empty">Run a search to discover your first prospects.</td></tr></tbody></table>
     </section>
-    <p class="footer">LYNX & CO. WEB STUDIO · Keep outreach relevant, accurate, and respectful. Use contact details in accordance with applicable laws and platform terms.</p>
+    <p class="footer">Map data © OpenStreetMap contributors · Data is available under the Open Database License (ODbL). Verify prospect details before outreach.</p>
   </main>
 <script>
   const $ = (id) => document.getElementById(id);
@@ -77,11 +77,11 @@
     e.preventDefault();const btn=$("searchBtn");btn.disabled=true;btn.textContent="Searching…";$("message").className="message";
     try{
       const response=await fetch("/api/search",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({industry:$("industry").value.trim(),location:$("location").value.trim(),maxResultCount:Number($("limit").value)})});
-      const data=await response.json();if(!response.ok)throw new Error(data.error||"Search failed. Check your API setup.");
+      const data=await response.json();if(!response.ok)throw new Error(data.error||"Search failed. Try again.");
       const incoming=(data.places||[]).map(p=>({id:p.id,name:p.displayName?.text||"Unnamed business",type:$("industry").value.trim(),phone:p.nationalPhoneNumber||"",address:p.formattedAddress||"",websiteUri:p.websiteUri||"",googleMapsUri:p.googleMapsUri||""}));
       const known=new Set(leads.map(x=>x.id));incoming.forEach(x=>{if(!known.has(x.id))leads.push(x)});
       activeFilter="all";document.querySelectorAll(".chip").forEach(b=>b.classList.toggle("active",b.dataset.filter==="all"));render();
-      showMessage("Found "+incoming.length+" listings. "+incoming.filter(x=>!x.websiteUri).length+" have no website listed by Google.","show");
+      showMessage("Found "+incoming.length+" map listings. "+incoming.filter(x=>!x.websiteUri).length+" have no website listed in OpenStreetMap.","show");
       if(!incoming.length)showMessage("No results returned. Try a broader search or nearby area.","show");
     }catch(err){showMessage(err.message,"error")}finally{btn.disabled=false;btn.textContent="Search leads ↗"}
   });
