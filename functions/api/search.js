@@ -28,16 +28,16 @@ export async function onRequestPost({ request }) {
   try {
     const geoUrl = new URL("https://nominatim.openstreetmap.org/search");
     geoUrl.search = new URLSearchParams({ q: location, format: "jsonv2", limit: "1" }).toString();
-    const geoRes = await fetch(geoUrl, {
+    const geoResult = await fetchJsonWithTimeout(geoUrl, {
       headers: {
         "User-Agent": "LynxLeadFinder/1.0 (https://lynxleadfinder.pages.dev/)",
         "Referer": APP_URL
       }
-    });
-    if (!geoRes.ok) {
+    }, 6000);
+    if (!geoResult.response.ok) {
       return json({ error: "The location lookup service is temporarily unavailable. Try again shortly." }, 502);
     }
-    const geo = await geoRes.json();
+    const geo = geoResult.data;
     if (!geo.length) return json({ error: "Location not found. Try a city and state." }, 404);
 
     const lat = Number(geo[0].lat);
@@ -52,7 +52,7 @@ export async function onRequestPost({ request }) {
           `nwr(around:7000,${lat},${lon})["${key}"="${value}"]["name"];`
         ).join("\n")
       : `nwr(around:7000,${lat},${lon})["name"~"${escapeRegex(industry)}",i];`;
-    const query = `[out:json][timeout:15][maxsize:134217728];(${selectors});out center tags;`;
+    const query = `[out:json][timeout:7][maxsize:67108864];(${selectors});out center tags;`;
 
     let result = null;
     let lastStatus = 0;
@@ -60,7 +60,7 @@ export async function onRequestPost({ request }) {
 
     for (let index = 0; index < OVERPASS_ENDPOINTS.length; index++) {
       try {
-        const response = await fetch(OVERPASS_ENDPOINTS[index], {
+        const { response, data } = await fetchJsonWithTimeout(OVERPASS_ENDPOINTS[index], {
           method: "POST",
           headers: {
             "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
@@ -68,7 +68,7 @@ export async function onRequestPost({ request }) {
             "Referer": APP_URL
           },
           body: "data=" + encodeURIComponent(query)
-        });
+        }, 8000);
 
         if (response.status === 429 || response.status === 406) {
           return json({
@@ -85,8 +85,7 @@ export async function onRequestPost({ request }) {
           return json({ error: lastIssue + " Please try again later." }, 502);
         }
 
-        const data = await response.json();
-        if (data.remark && !Array.isArray(data.elements)) {
+        if (!data || !Array.isArray(data.elements)) {
           lastIssue = "The map data service rejected or could not finish the search.";
           if (index + 1 < OVERPASS_ENDPOINTS.length) continue;
           return json({ error: lastIssue + " Try a smaller area or a different business type." }, 502);
@@ -94,8 +93,10 @@ export async function onRequestPost({ request }) {
 
         result = data;
         break;
-      } catch {
-        lastIssue = "A connection to the map data service failed.";
+      } catch (error) {
+        lastIssue = error?.name === "AbortError"
+          ? "A map data server took too long to answer."
+          : "A connection to the map data service failed.";
         if (index + 1 >= OVERPASS_ENDPOINTS.length) {
           return json({ error: lastIssue + " Please try again later." }, 502);
         }
@@ -135,6 +136,19 @@ export async function onRequestPost({ request }) {
     return json({ places, source: "OpenStreetMap" });
   } catch {
     return json({ error: "The free map search could not be completed. Please try again shortly." }, 502);
+  }
+}
+
+async function fetchJsonWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    let data = null;
+    try { data = await response.json(); } catch { /* Non-JSON response from an upstream service. */ }
+    return { response, data };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
