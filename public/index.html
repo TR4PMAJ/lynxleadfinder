@@ -24,7 +24,7 @@
   <main class="shell">
     <header class="top">
       <div class="brand"><div class="mark">L</div><div>LYNX & CO.<small>WEB STUDIO · LEAD INTELLIGENCE</small></div></div>
-      <div class="status">Overture Places · Monthly snapshot</div>
+      <div class="status">Pennsylvania + New Jersey · Monthly snapshot</div>
     </header>
     <h1>Find your next <span>client.</span></h1>
     <p class="intro">Discover local businesses, identify listings without a website link, and organize your outreach prospects.</p>
@@ -38,7 +38,7 @@
         <button id="searchBtn" type="submit">Search leads ↗</button>
       </form>
       <div id="message" class="message" role="status"></div>
-      <p class="notice">Searches use a locally hosted Philadelphia-area Overture snapshot. “No website listed” means no website is recorded in the snapshot; verify independently before outreach.</p>
+      <p class="notice">Searches use locally hosted Pennsylvania and New Jersey data. Enter a city and state or ZIP code. “No website listed” means no website is recorded in the snapshot; verify independently before outreach.</p>
     </section>
 
     <section class="stats">
@@ -59,7 +59,7 @@
     <section class="tablewrap" style="margin-top:12px">
       <table><thead><tr><th>Business</th><th>Phone</th><th>Address</th><th>Website status</th><th>Listing</th></tr></thead><tbody id="results"><tr><td colspan="5" class="empty">Run a search to discover your first prospects.</td></tr></tbody></table>
     </section>
-    <p class="footer">Business data: Overture Maps Places. Source-specific licenses and notices are listed in <a class="link" href="/OVERTURE-NOTICE.txt" target="_blank" rel="noopener">data notices</a>. Monthly snapshot; verify prospect details before outreach.</p>
+    <p class="footer">Business data: Overture Maps Places. Source-specific licenses and notices are listed in <a class="link" href="/OVERTURE-NOTICE.txt" target="_blank" rel="noopener">data notices</a>. Monthly regional snapshot; verify prospect details before outreach.</p>
   </main>
 <script>
   const $ = (id) => document.getElementById(id);
@@ -76,39 +76,101 @@
     $("results").innerHTML=visible.length?visible.map(x=>'<tr><td><span class="biz">'+escapeHtml(x.name)+'</span><span class="sub">'+escapeHtml(x.type||"")+'</span></td><td>'+ (x.phone?'<a class="link" href="tel:'+escapeHtml(x.phone)+'">'+escapeHtml(x.phone)+'</a>':'<span class="sub">Not listed</span>')+'</td><td>'+escapeHtml(x.address||"Not listed")+'</td><td><span class="tag '+(x.websiteUri?"has":"")+'">'+(x.websiteUri?"Website listed":"No website listed")+'</span>'+(x.websiteUri?'<span class="sub"><a class="link" target="_blank" rel="noopener" href="'+escapeHtml(x.websiteUri)+'">Visit website ↗</a></span>':'')+'</td><td>'+(x.googleMapsUri?'<a class="link" target="_blank" rel="noopener" href="'+escapeHtml(x.googleMapsUri)+'">Open Maps ↗</a>':'—')+'</td></tr>').join(""):'<tr><td colspan="5" class="empty">No businesses match this filter.</td></tr>';
   }
   function normalizeText(value){return String(value||"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim();}
-  async function loadSnapshot(){
-    if(snapshotCache) return snapshotCache;
-    if(snapshotPromise) return snapshotPromise;
-    snapshotPromise=(async()=>{
-      const response=await fetch("/data/philadelphia-places.json.gz",{cache:"no-cache"});
+  let regionManifestCache=null;
+  let regionManifestPromise=null;
+  const tileCache=new Map();
+
+  async function loadRegionManifest(){
+    if(regionManifestCache) return regionManifestCache;
+    if(regionManifestPromise) return regionManifestPromise;
+    regionManifestPromise=(async()=>{
+      const response=await fetch("/data/regions.json",{cache:"no-cache"});
       if(!response.ok){
-        if(response.status===404) throw new Error("The Philadelphia business index has not been generated yet. Open GitHub → Actions → Refresh Philadelphia Overture business index → Run workflow. Once it finishes, Cloudflare will redeploy the site.");
-        throw new Error("Could not load the business index (HTTP "+response.status+"). Refresh the page and try again.");
+        if(response.status===404) throw new Error("The Pennsylvania and New Jersey index has not been generated yet. Open GitHub → Actions → Refresh Pennsylvania and New Jersey Overture index → Run workflow. When it finishes, Cloudflare will redeploy the site.");
+        throw new Error("Could not load the regional index (HTTP "+response.status+"). Refresh the page and try again.");
       }
+      const data=await response.json();
+      if(!Array.isArray(data.regions)) throw new Error("The regional index is not in the expected format.");
+      regionManifestCache=data;
+      return data;
+    })();
+    try{return await regionManifestPromise;}finally{regionManifestPromise=null;}
+  }
+
+  async function loadTile(file){
+    if(tileCache.has(file)) return tileCache.get(file);
+    const pending=(async()=>{
+      const response=await fetch("/data/"+file,{cache:"force-cache"});
+      if(!response.ok) throw new Error("Could not load a regional business data tile (HTTP "+response.status+"). Try again after the latest Cloudflare deployment finishes.");
       const bytes=await response.arrayBuffer();
       const raw=new Uint8Array(bytes);
-      let jsonText;
+      let textData;
       if(raw[0]===0x1f&&raw[1]===0x8b){
-        if(typeof DecompressionStream==="undefined") throw new Error("This browser cannot decompress the business index. Please use an updated version of Chrome or Edge.");
+        if(typeof DecompressionStream==="undefined") throw new Error("Your browser cannot decompress the business index. Please update Chrome or Edge.");
         const stream=new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
-        jsonText=await new Response(stream).text();
+        textData=await new Response(stream).text();
       }else{
-        jsonText=new TextDecoder().decode(bytes);
+        textData=new TextDecoder().decode(bytes);
       }
-      const parsed=JSON.parse(jsonText);
-      if(!Array.isArray(parsed.places)) throw new Error("The downloaded business index is not in the expected format.");
-      snapshotCache=parsed;
-      return snapshotCache;
+      const data=JSON.parse(textData);
+      if(!Array.isArray(data.places)) throw new Error("A business data tile is invalid.");
+      return data.places;
     })();
-    try{return await snapshotPromise;}finally{snapshotPromise=null;}
+    tileCache.set(file,pending);
+    try{return await pending;}catch(err){tileCache.delete(file);throw err;}
   }
-  function categoryMatches(place, query){
+
+  function findState(location){
+    const q=normalizeText(location);
+    const tokens=q.split(" ");
+    const zip=(location.match(/\\b\\d{5}\\b/)||[])[0]||"";
+    if(/\\b(pennsylvania|pa)\\b/.test(q)) return "PA";
+    if(/\\b(new jersey|nj)\\b/.test(q)) return "NJ";
+    if(zip){
+      const first3=Number(zip.slice(0,3));
+      if(first3>=150&&first3<=196) return "PA";
+      if(first3>=70&&first3<=89) return "NJ";
+    }
+    const njCities=["newark","jersey city","paterson","elizabeth","edison","camden","trenton","cherry hill","hoboken","atlantic city","princeton","toms river","clifton","passaic","new brunswick","bayonne","marlton","vineland","union city","hackensack"];
+    if(njCities.some(city=>q.includes(normalizeText(city)))) return "NJ";
+    const paCities=["philadelphia","pittsburgh","allentown","erie","reading","scranton","bethlehem","lancaster","harrisburg","york","state college","wilkes barre","altoona","johnstown","chester","norristown","king of prussia","west chester","pottstown","hazleton"];
+    if(paCities.some(city=>q.includes(normalizeText(city)))) return "PA";
+    return "PA";
+  }
+
+  function locationTerms(location,stateCode){
+    const stateWords=new Set(["pennsylvania","pa","new","jersey","nj","usa","united","states","city","metro","area"]);
+    return normalizeText(location).split(" ").filter(term=>term&&!stateWords.has(term)&&!/^\\d{5}$/.test(term)).map(term=>term==="philly"?"philadelphia":term);
+  }
+
+  function selectTiles(region,location){
+    const zip=(location.match(/\\b\\d{5}\\b/)||[])[0]||"";
+    const terms=locationTerms(location,region.code);
+    let selected;
+    if(zip){
+      selected=region.tiles.filter(tile=>(tile.postcodes||[]).includes(zip));
+    }else if(terms.length){
+      selected=region.tiles.filter(tile=>(tile.localities||[]).some(locality=>{
+        const city=normalizeText(locality);
+        return terms.every(term=>city.includes(term));
+      }));
+    }else{
+      selected=region.tiles.slice();
+    }
+    // Address metadata can occasionally be incomplete; search all of the selected
+    // state rather than incorrectly claiming that no matching businesses exist.
+    const usedFallback=selected.length===0;
+    if(usedFallback) selected=region.tiles.slice();
+    return {tiles:selected,usedFallback};
+  }
+
+  function categoryMatches(place,query){
     const cat=normalizeText([place.category,...(place.categories||[])].join(" "));
     const name=normalizeText(place.name);
     const q=normalizeText(query);
     const groups=[
       {match:/barber/,terms:["barber","hair salon","hairdresser"]},
-      {match:/auto detail|car detail/,terms:["auto detailing","car detailing","car_detailing","auto_detailing","car wash","auto body","car repair","vehicle repair","vehicle service"]},
+      {match:/auto detail|car detail/,terms:["auto detailing","car detailing","car detailing service","car_detailing","auto_detailing","car wash","auto body","car repair","vehicle repair","vehicle service"]},
       {match:/mechanic|auto repair/,terms:["auto repair","car repair","vehicle repair","automotive repair","mechanic"]},
       {match:/towing/,terms:["towing","tow truck","roadside assistance"]},
       {match:/plumb/,terms:["plumber","plumbing"]},
@@ -128,21 +190,32 @@
     const terms=q.split(" ").filter(Boolean);
     return terms.length>0&&(cat.includes(q)||name.includes(q)||terms.every(term=>cat.includes(term)||name.includes(term)));
   }
-  function locationMatches(place, query){
-    const stopWords=new Set(["pennsylvania","new","jersey","pa","nj","usa","united","states","city","metro","area"]);
-    const terms=normalizeText(query).split(" ").filter(term=>term&&!stopWords.has(term)).map(term=>term==="philly"?"philadelphia":term);
+
+  function locationMatches(place,location){
+    const zip=(location.match(/\\b\\d{5}\\b/)||[])[0]||"";
+    if(zip) return String(place.postcode||"")===zip;
+    const terms=locationTerms(location,place.regionCode);
     if(!terms.length) return true;
     const haystack=normalizeText([place.locality,place.region,place.postcode,place.address].join(" "));
     return terms.every(term=>haystack.includes(term));
   }
+
   $("searchForm").addEventListener("submit",async e=>{
     e.preventDefault();
-    const btn=$("searchBtn");btn.disabled=true;btn.textContent="Loading local index…";$("message").className="message";
+    const btn=$("searchBtn");btn.disabled=true;btn.textContent="Loading regional index…";$("message").className="message";
     try{
-      const snapshot=await loadSnapshot();
-      const industry=$("industry").value.trim();
+      const manifest=await loadRegionManifest();
       const location=$("location").value.trim();
-      const selected=snapshot.places
+      const stateCode=findState(location);
+      const region=manifest.regions.find(item=>item.code===stateCode);
+      if(!region) throw new Error("This region is not in the current index. Available states: "+manifest.regions.map(item=>item.name).join(", ")+".");
+      const selection=selectTiles(region,location);
+      if(!selection.tiles.length) throw new Error("No data tiles are available for "+region.name+". Run the GitHub Actions refresh workflow.");
+      btn.textContent="Loading "+selection.tiles.length+" data tiles…";
+      const tileArrays=await Promise.all(selection.tiles.map(tile=>loadTile(tile.file)));
+      const allPlaces=tileArrays.flat();
+      const industry=$("industry").value.trim();
+      const selected=allPlaces
         .filter(place=>place.operatingStatus!=="permanently_closed"&&categoryMatches(place,industry)&&locationMatches(place,location))
         .sort((a,b)=>Number(Boolean(a.website))-Number(Boolean(b.website))||((b.confidence||0)-(a.confidence||0)))
         .slice(0,Number($("limit").value))
@@ -161,11 +234,12 @@
       document.querySelectorAll(".chip").forEach(b=>b.classList.toggle("active",b.dataset.filter==="all"));
       render();
       if(!selected.length){
-        showMessage("No matching listings were found. This snapshot covers Philadelphia and nearby areas only. Try another category, city, or ZIP code.","show");
+        showMessage("No matching "+industry+" listings were found in "+region.name+". Try a broader business type, nearby city, or ZIP code.","show");
       }else{
         const noWebsite=selected.filter(place=>!place.websiteUri).length;
-        const date=snapshot.generatedAt?new Date(snapshot.generatedAt).toLocaleDateString():"unknown date";
-        showMessage("Found "+selected.length+" listings; "+noWebsite+" have no website recorded. Snapshot generated "+date+".","show");
+        const date=manifest.generatedAt?new Date(manifest.generatedAt).toLocaleDateString():"unknown date";
+        const fallbackNote=selection.usedFallback?" Search used a wider state tile fallback because no exact city tile was indexed.":"";
+        showMessage("Found "+selected.length+" listings; "+noWebsite+" have no website recorded. Region: "+region.name+". Snapshot: "+date+"."+fallbackNote,"show");
       }
     }catch(err){
       showMessage(err.message||"Search failed. Please try again.","error");
