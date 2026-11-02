@@ -38,9 +38,9 @@ Currently indexed states:
 - Pennsylvania
 - New Jersey
 
-The regional bounding boxes are approximate and used to select source records. If an Overture address explicitly identifies the other indexed state, that record is excluded from the current state input. A small number of records without state-level address metadata may still fall near state borders; verify each prospect before outreach.
+The regional bounding boxes are approximate and used to select source records. The builder streams the GeoJSON rather than loading all of each state into memory. If an Overture address explicitly identifies the other indexed state, that record is excluded from the current state input. A small number of records without state-level address metadata may still fall near state borders; verify each prospect before outreach.
 
-The code stores records in state-specific, 0.5-degree geographic tiles. Any tile above 20 MiB compressed is subdivided before publishing, keeping each Pages asset below the 25 MiB file-size limit. This layout is designed to extend to additional states without building one huge download.
+The code stores records in state-specific, 0.125-degree geographic tiles. Any tile above 20 MiB compressed is subdivided before publishing, keeping each Pages asset below the 25 MiB file-size limit. This layout is designed to extend to additional states without building one huge download.
 
 To add another state, add its bounding box and aliases in `scripts/build_overture_snapshot.py`, add a corresponding `overturemaps download --bbox=...` step in `.github/workflows/refresh-overture.yml`, and add its two-letter code/name in the browser's state resolver in `public/index.html`.
 
