@@ -24,7 +24,7 @@
   <main class="shell">
     <header class="top">
       <div class="brand"><div class="mark">L</div><div>LYNX & CO.<small>WEB STUDIO · LEAD INTELLIGENCE</small></div></div>
-      <div class="status">OpenStreetMap · No API key</div>
+      <div class="status">Overture Places · Monthly snapshot</div>
     </header>
     <h1>Find your next <span>client.</span></h1>
     <p class="intro">Discover local businesses, identify listings without a website link, and organize your outreach prospects.</p>
@@ -38,7 +38,7 @@
         <button id="searchBtn" type="submit">Search leads ↗</button>
       </form>
       <div id="message" class="message" role="status"></div>
-      <p class="notice">Search results come from OpenStreetMap community data. “No website listed” means no website tag was found in the map data; verify independently before contacting the business.</p>
+      <p class="notice">Searches use a locally hosted Philadelphia-area Overture snapshot. “No website listed” means no website is recorded in the snapshot; verify independently before outreach.</p>
     </section>
 
     <section class="stats">
@@ -59,12 +59,14 @@
     <section class="tablewrap" style="margin-top:12px">
       <table><thead><tr><th>Business</th><th>Phone</th><th>Address</th><th>Website status</th><th>Listing</th></tr></thead><tbody id="results"><tr><td colspan="5" class="empty">Run a search to discover your first prospects.</td></tr></tbody></table>
     </section>
-    <p class="footer">Map data © OpenStreetMap contributors · Data is available under the Open Database License (ODbL). Verify prospect details before outreach.</p>
+    <p class="footer">Business data: Overture Maps Places. Source-specific licenses and notices are listed in <a class="link" href="/OVERTURE-NOTICE.txt" target="_blank" rel="noopener">data notices</a>. Monthly snapshot; verify prospect details before outreach.</p>
   </main>
 <script>
   const $ = (id) => document.getElementById(id);
   let leads = [];
   let activeFilter = "all";
+  let snapshotCache = null;
+  let snapshotPromise = null;
   const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   function showMessage(text, type="show"){const el=$("message");el.textContent=text;el.className="message "+type;}
   function render(){
@@ -73,19 +75,103 @@
     const visible=leads.filter(x=>activeFilter==="all"||(activeFilter==="missing"&&!x.websiteUri)||(activeFilter==="website"&&x.websiteUri));
     $("results").innerHTML=visible.length?visible.map(x=>'<tr><td><span class="biz">'+escapeHtml(x.name)+'</span><span class="sub">'+escapeHtml(x.type||"")+'</span></td><td>'+ (x.phone?'<a class="link" href="tel:'+escapeHtml(x.phone)+'">'+escapeHtml(x.phone)+'</a>':'<span class="sub">Not listed</span>')+'</td><td>'+escapeHtml(x.address||"Not listed")+'</td><td><span class="tag '+(x.websiteUri?"has":"")+'">'+(x.websiteUri?"Website listed":"No website listed")+'</span>'+(x.websiteUri?'<span class="sub"><a class="link" target="_blank" rel="noopener" href="'+escapeHtml(x.websiteUri)+'">Visit website ↗</a></span>':'')+'</td><td>'+(x.googleMapsUri?'<a class="link" target="_blank" rel="noopener" href="'+escapeHtml(x.googleMapsUri)+'">Open Maps ↗</a>':'—')+'</td></tr>').join(""):'<tr><td colspan="5" class="empty">No businesses match this filter.</td></tr>';
   }
+  function normalizeText(value){return String(value||"").normalize("NFD").replace(/[\\u0300-\\u036f]/g,"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim();}
+  async function loadSnapshot(){
+    if(snapshotCache) return snapshotCache;
+    if(snapshotPromise) return snapshotPromise;
+    snapshotPromise=(async()=>{
+      const response=await fetch("/data/philadelphia-places.json.gz",{cache:"no-cache"});
+      if(!response.ok){
+        if(response.status===404) throw new Error("The Philadelphia business index has not been generated yet. Open GitHub → Actions → Refresh Philadelphia Overture business index → Run workflow. Once it finishes, Cloudflare will redeploy the site.");
+        throw new Error("Could not load the business index (HTTP "+response.status+"). Refresh the page and try again.");
+      }
+      const bytes=await response.arrayBuffer();
+      const raw=new Uint8Array(bytes);
+      let jsonText;
+      if(raw[0]===0x1f&&raw[1]===0x8b){
+        if(typeof DecompressionStream==="undefined") throw new Error("This browser cannot decompress the business index. Please use an updated version of Chrome or Edge.");
+        const stream=new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+        jsonText=await new Response(stream).text();
+      }else{
+        jsonText=new TextDecoder().decode(bytes);
+      }
+      const parsed=JSON.parse(jsonText);
+      if(!Array.isArray(parsed.places)) throw new Error("The downloaded business index is not in the expected format.");
+      snapshotCache=parsed;
+      return snapshotCache;
+    })();
+    try{return await snapshotPromise;}finally{snapshotPromise=null;}
+  }
+  function categoryMatches(place, query){
+    const cat=normalizeText([place.category,...(place.categories||[])].join(" "));
+    const name=normalizeText(place.name);
+    const q=normalizeText(query);
+    const groups=[
+      {match:/barber/,terms:["barber","hair salon","hairdresser"]},
+      {match:/auto detail|car detail/,terms:["auto detailing","car detailing","car wash","auto body","car repair","vehicle repair"]},
+      {match:/mechanic|auto repair/,terms:["auto repair","car repair","vehicle repair","automotive repair","mechanic"]},
+      {match:/towing/,terms:["towing","tow truck","roadside assistance"]},
+      {match:/plumb/,terms:["plumber","plumbing"]},
+      {match:/electric/,terms:["electrician","electrical contractor"]},
+      {match:/dentist|dental/,terms:["dentist","dental clinic"]},
+      {match:/restaurant/,terms:["restaurant","fast food","casual dining"]},
+      {match:/cafe|coffee/,terms:["cafe","coffee shop","coffeehouse"]},
+      {match:/gym|fitness/,terms:["gym","fitness centre","fitness club"]},
+      {match:/salon|beauty/,terms:["beauty salon","hair salon","nail salon"]},
+      {match:/landscap|lawn/,terms:["landscaper","landscaping","lawn care","gardener"]},
+      {match:/florist|flower/,terms:["florist","flower shop"]},
+      {match:/bakery/,terms:["bakery"]},
+      {match:/laundry|laundromat/,terms:["laundromat","laundry"]}
+    ];
+    const group=groups.find(item=>item.match.test(q));
+    if(group) return group.terms.some(term=>cat.includes(normalizeText(term))||name.includes(normalizeText(term)));
+    const terms=q.split(" ").filter(Boolean);
+    return terms.length>0&&(cat.includes(q)||name.includes(q)||terms.every(term=>cat.includes(term)||name.includes(term)));
+  }
+  function locationMatches(place, query){
+    let q=normalizeText(query).replace(/\\b(pennsylvania|new jersey|pa|nj|usa|united states|city|metro|area)\\b/g," ").replace(/\\s+/g," ").trim();
+    q=q.replace(/\\bphilly\\b/g,"philadelphia");
+    if(!q) return true;
+    const haystack=normalizeText([place.locality,place.region,place.postcode,place.address].join(" "));
+    return q.split(" ").filter(Boolean).every(term=>haystack.includes(term));
+  }
   $("searchForm").addEventListener("submit",async e=>{
-    e.preventDefault();const btn=$("searchBtn");btn.disabled=true;btn.textContent="Searching…";$("message").className="message";
-    const controller=new AbortController();
-    const requestTimer=setTimeout(()=>controller.abort(),24000);
+    e.preventDefault();
+    const btn=$("searchBtn");btn.disabled=true;btn.textContent="Loading local index…";$("message").className="message";
     try{
-      const response=await fetch("/api/search",{method:"POST",headers:{"Content-Type":"application/json"},signal:controller.signal,body:JSON.stringify({industry:$("industry").value.trim(),location:$("location").value.trim(),maxResultCount:Number($("limit").value)})});
-      const data=await response.json();if(!response.ok)throw new Error(data.error||"Search failed. Try again.");
-      const incoming=(data.places||[]).map(p=>({id:p.id,name:p.name||"Unnamed business",type:$("industry").value.trim(),phone:p.phone||"",address:p.address||"",websiteUri:p.websiteUri||"",googleMapsUri:p.googleMapsUri||""}));
-      const known=new Set(leads.map(x=>x.id));incoming.forEach(x=>{if(!known.has(x.id))leads.push(x)});
-      activeFilter="all";document.querySelectorAll(".chip").forEach(b=>b.classList.toggle("active",b.dataset.filter==="all"));render();
-      showMessage("Found "+incoming.length+" map listings. "+incoming.filter(x=>!x.websiteUri).length+" have no website listed in OpenStreetMap.","show");
-      if(!incoming.length)showMessage("No results returned. Try a broader search or nearby area.","show");
-    }catch(err){showMessage(err.name==="AbortError"?"Search took too long. The public map provider may be busy. Please wait 30 seconds and try again.":err.message,"error")}finally{clearTimeout(requestTimer);btn.disabled=false;btn.textContent="Search leads ↗"}
+      const snapshot=await loadSnapshot();
+      const industry=$("industry").value.trim();
+      const location=$("location").value.trim();
+      const selected=snapshot.places
+        .filter(place=>categoryMatches(place,industry)&&locationMatches(place,location))
+        .sort((a,b)=>Number(Boolean(a.website))-Number(Boolean(b.website))||((b.confidence||0)-(a.confidence||0)))
+        .slice(0,Number($("limit").value))
+        .map(place=>({
+          id:place.id,
+          name:place.name||"Unnamed business",
+          type:place.category||industry,
+          phone:place.phone||"",
+          address:[place.address,place.locality,place.region,place.postcode].filter(Boolean).join(", ")||"Address not listed",
+          websiteUri:place.website||"",
+          googleMapsUri:"https://www.google.com/maps/search/?api=1&query="+place.latitude+","+place.longitude,
+          confidence:place.confidence
+        }));
+      leads=selected;
+      activeFilter="all";
+      document.querySelectorAll(".chip").forEach(b=>b.classList.toggle("active",b.dataset.filter==="all"));
+      render();
+      if(!selected.length){
+        showMessage("No matching listings were found. This snapshot covers Philadelphia and nearby areas only. Try another category, city, or ZIP code.","show");
+      }else{
+        const noWebsite=selected.filter(place=>!place.websiteUri).length;
+        const date=snapshot.generatedAt?new Date(snapshot.generatedAt).toLocaleDateString():"unknown date";
+        showMessage("Found "+selected.length+" listings; "+noWebsite+" have no website recorded. Snapshot generated "+date+".","show");
+      }
+    }catch(err){
+      showMessage(err.message||"Search failed. Please try again.","error");
+    }finally{
+      btn.disabled=false;btn.textContent="Search leads ↗";
+    }
   });
   document.querySelectorAll(".chip").forEach(b=>b.addEventListener("click",()=>{activeFilter=b.dataset.filter;document.querySelectorAll(".chip").forEach(x=>x.classList.toggle("active",x===b));render()}));
   $("clearBtn").addEventListener("click",()=>{leads=[];render();$("message").className="message"});
