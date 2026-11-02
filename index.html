@@ -78,7 +78,7 @@
     try{
       const response=await fetch("/api/search",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({industry:$("industry").value.trim(),location:$("location").value.trim(),maxResultCount:Number($("limit").value)})});
       const data=await response.json();if(!response.ok)throw new Error(data.error||"Search failed. Try again.");
-      const incoming=(data.places||[]).map(p=>({id:p.id,name:p.displayName?.text||"Unnamed business",type:$("industry").value.trim(),phone:p.nationalPhoneNumber||"",address:p.formattedAddress||"",websiteUri:p.websiteUri||"",googleMapsUri:p.googleMapsUri||""}));
+      const incoming=(data.places||[]).map(p=>({id:p.id,name:p.name||"Unnamed business",type:$("industry").value.trim(),phone:p.phone||"",address:p.address||"",websiteUri:p.websiteUri||"",googleMapsUri:p.googleMapsUri||""}));
       const known=new Set(leads.map(x=>x.id));incoming.forEach(x=>{if(!known.has(x.id))leads.push(x)});
       activeFilter="all";document.querySelectorAll(".chip").forEach(b=>b.classList.toggle("active",b.dataset.filter==="all"));render();
       showMessage("Found "+incoming.length+" map listings. "+incoming.filter(x=>!x.websiteUri).length+" have no website listed in OpenStreetMap.","show");
