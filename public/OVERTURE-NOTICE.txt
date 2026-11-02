@@ -15,16 +15,7 @@ Overture Places records have source-specific licenses. The October 2026 Overture
 
 The full CDLA-Permissive-2.0 text and Apache License 2.0 text are included alongside this notice in the data directory. The Foursquare OS Places notice is reproduced below.
 
-Foursquare OS Places Notice:
-© 2026 Foursquare Labs, Inc. All rights reserved.
-The Foursquare OS Places dataset (the “Data”) is licensed under the Apache License, Version 2.0 (the “License”). You may not use, modify, or distribute the Data except in compliance with the License.
-As set forth more fully in the License, if you use, modify, or distribute the Data, you must:
-- provide recipients with a copy of the License.
-- if applicable, include prominent notices to the extent you’ve changed the Data.
-- preserve attribution to Foursquare, including preserving the full content of this NOTICE.txt file.
-To ensure appropriate attribution to Foursquare, Foursquare recommends including this NOTICE.txt file with distributed data.
-You may obtain a copy of the License at https://www.apache.org/licenses/LICENSE-2.0.
-The Foursquare data is provided on an “AS IS” BASIS, without warranties or conditions of any kind.
+Foursquare OS Places Notice: the full required notice is included in /data/NOTICE.txt. The Apache License 2.0 text is included in /data/Apache-2.0.txt.
 
 QUALITY AND USE
 The source is a monthly snapshot, not a live directory. A missing website or phone means that the snapshot contains no value for that field; it does not prove the business lacks a website or phone. Overture documents known issues including duplicate records, junk records, and incomplete attributes. Verify each prospect independently before contacting it.
