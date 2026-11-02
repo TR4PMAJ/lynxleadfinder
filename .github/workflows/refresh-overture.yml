@@ -1,4 +1,4 @@
-name: Refresh Philadelphia Overture business index
+name: Refresh Pennsylvania and New Jersey Overture index
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ permissions:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -24,31 +24,40 @@ jobs:
       - name: Install Overture downloader
         run: python -m pip install --upgrade overturemaps
 
-      - name: Validate snapshot builder syntax
+      - name: Validate index builder syntax
         run: python -m py_compile scripts/build_overture_snapshot.py
 
-      - name: Download Philadelphia-area Places extract
+      - name: Download Pennsylvania Places
         run: |
           overturemaps download \
-            --bbox=-75.35,39.80,-74.85,40.25 \
+            --bbox=-80.52,39.72,-74.69,42.27 \
             --type=place \
             -f geojson \
-            -o "$RUNNER_TEMP/overture-philadelphia.geojson"
+            -o "$RUNNER_TEMP/pennsylvania.geojson"
 
-      - name: Build compact static search index
+      - name: Download New Jersey Places
+        run: |
+          overturemaps download \
+            --bbox=-75.56,38.92,-73.89,41.36 \
+            --type=place \
+            -f geojson \
+            -o "$RUNNER_TEMP/new-jersey.geojson"
+
+      - name: Build state and city searchable tiles
         run: |
           python scripts/build_overture_snapshot.py \
-            --input "$RUNNER_TEMP/overture-philadelphia.geojson" \
-            --output public/data/philadelphia-places.json.gz
+            --input "PA=$RUNNER_TEMP/pennsylvania.geojson" \
+            --input "NJ=$RUNNER_TEMP/new-jersey.geojson" \
+            --output public/data
 
-      - name: Commit refreshed snapshot
+      - name: Commit refreshed regional index
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add public/data/philadelphia-places.json.gz
+          git add public/data/regions.json public/data/regions/
           if git diff --cached --quiet; then
-            echo "Snapshot unchanged; no commit needed."
+            echo "Index unchanged; no commit needed."
           else
-            git commit -m "Refresh Philadelphia Overture business index"
+            git commit -m "Refresh Pennsylvania and New Jersey business index"
             git push
           fi
