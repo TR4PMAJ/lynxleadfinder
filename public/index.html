@@ -100,8 +100,12 @@
   async function loadTile(file){
     if(tileCache.has(file)) return tileCache.get(file);
     const pending=(async()=>{
-      const response=await fetch("/data/"+file,{cache:"force-cache"});
-      if(!response.ok) throw new Error("Could not load a regional business data tile (HTTP "+response.status+"). Try again after the latest Cloudflare deployment finishes.");
+      // The manifest timestamp versions each snapshot. Revalidate tile requests so
+      // a cached error or an older monthly tile cannot stick after a deployment.
+      const version=regionManifestCache?.generatedAt||"latest";
+      const tileUrl="/data/"+file+"?v="+encodeURIComponent(version);
+      const response=await fetch(tileUrl,{cache:"no-cache"});
+      if(!response.ok) throw new Error("Regional data tile "+file+" returned HTTP "+response.status+". Reload the page and retry; share this tile name if the error continues.");
       const bytes=await response.arrayBuffer();
       const raw=new Uint8Array(bytes);
       let textData;
