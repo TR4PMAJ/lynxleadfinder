@@ -152,9 +152,11 @@ def main() -> None:
         record = normalize_feature(feature)
         if not record:
             continue
+        location_key = (record["address"] or record["postcode"] or
+                        f'{record["latitude"]:.5f},{record["longitude"]:.5f}')
         dedupe_key = (
             record["name"].casefold().strip(),
-            (record["address"] or record["postcode"]).casefold().strip(),
+            location_key.casefold().strip(),
             record["category"].casefold().strip(),
         )
         if dedupe_key in seen:
