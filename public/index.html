@@ -75,7 +75,7 @@
     const visible=leads.filter(x=>activeFilter==="all"||(activeFilter==="missing"&&!x.websiteUri)||(activeFilter==="website"&&x.websiteUri));
     $("results").innerHTML=visible.length?visible.map(x=>'<tr><td><span class="biz">'+escapeHtml(x.name)+'</span><span class="sub">'+escapeHtml(x.type||"")+'</span></td><td>'+ (x.phone?'<a class="link" href="tel:'+escapeHtml(x.phone)+'">'+escapeHtml(x.phone)+'</a>':'<span class="sub">Not listed</span>')+'</td><td>'+escapeHtml(x.address||"Not listed")+'</td><td><span class="tag '+(x.websiteUri?"has":"")+'">'+(x.websiteUri?"Website listed":"No website listed")+'</span>'+(x.websiteUri?'<span class="sub"><a class="link" target="_blank" rel="noopener" href="'+escapeHtml(x.websiteUri)+'">Visit website ↗</a></span>':'')+'</td><td>'+(x.googleMapsUri?'<a class="link" target="_blank" rel="noopener" href="'+escapeHtml(x.googleMapsUri)+'">Open Maps ↗</a>':'—')+'</td></tr>').join(""):'<tr><td colspan="5" class="empty">No businesses match this filter.</td></tr>';
   }
-  function normalizeText(value){return String(value||"").normalize("NFD").replace(/[\\u0300-\\u036f]/g,"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim();}
+  function normalizeText(value){return String(value||"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim();}
   async function loadSnapshot(){
     if(snapshotCache) return snapshotCache;
     if(snapshotPromise) return snapshotPromise;
@@ -129,11 +129,11 @@
     return terms.length>0&&(cat.includes(q)||name.includes(q)||terms.every(term=>cat.includes(term)||name.includes(term)));
   }
   function locationMatches(place, query){
-    let q=normalizeText(query).replace(/\\b(pennsylvania|new jersey|pa|nj|usa|united states|city|metro|area)\\b/g," ").replace(/\\s+/g," ").trim();
-    q=q.replace(/\\bphilly\\b/g,"philadelphia");
-    if(!q) return true;
+    const stopWords=new Set(["pennsylvania","new","jersey","pa","nj","usa","united","states","city","metro","area"]);
+    const terms=normalizeText(query).split(" ").filter(term=>term&&!stopWords.has(term)).map(term=>term==="philly"?"philadelphia":term);
+    if(!terms.length) return true;
     const haystack=normalizeText([place.locality,place.region,place.postcode,place.address].join(" "));
-    return q.split(" ").filter(Boolean).every(term=>haystack.includes(term));
+    return terms.every(term=>haystack.includes(term));
   }
   $("searchForm").addEventListener("submit",async e=>{
     e.preventDefault();
