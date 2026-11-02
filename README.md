@@ -20,7 +20,7 @@ A small-business prospecting dashboard using OpenStreetMap community data and Cl
 
 The static website is in `public/`. The Pages Function stays in the repository-root `functions/` folder, where Cloudflare expects it.
 
-**Important:** Do not use `npx wrangler deploy`; that deploys a Worker and does not deploy this Pages Function project. For a CLI/Builds deploy command use `npx wrangler pages deploy public --project-name <your-pages-project-name>`.
+**Important:** For this Git-connected Pages project, do not enter a Wrangler deploy command. Cloudflare automatically builds and deploys each push to `main`. The `npx wrangler pages deploy public --project-name <your-pages-project-name>` command is only for a separate manual CLI deployment workflow.
 
 The `functions/api/search.js` file handles requests to `/api/search`.
 
