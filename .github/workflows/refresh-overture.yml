@@ -13,6 +13,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: refresh-overture-index
+  cancel-in-progress: true
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
@@ -59,10 +63,14 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Rebase on the latest main in case code/documentation commits landed
+          # while the large regional snapshot was being built.
+          git fetch origin main
+          git rebase origin/main
           git add public/data/regions.json public/data/regions/
           if git diff --cached --quiet; then
             echo "Index unchanged; no commit needed."
           else
             git commit -m "Refresh Pennsylvania and New Jersey business index"
-            git push
+            git push origin HEAD:main
           fi
