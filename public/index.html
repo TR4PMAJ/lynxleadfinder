@@ -75,15 +75,17 @@
   }
   $("searchForm").addEventListener("submit",async e=>{
     e.preventDefault();const btn=$("searchBtn");btn.disabled=true;btn.textContent="Searching…";$("message").className="message";
+    const controller=new AbortController();
+    const requestTimer=setTimeout(()=>controller.abort(),24000);
     try{
-      const response=await fetch("/api/search",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({industry:$("industry").value.trim(),location:$("location").value.trim(),maxResultCount:Number($("limit").value)})});
+      const response=await fetch("/api/search",{method:"POST",headers:{"Content-Type":"application/json"},signal:controller.signal,body:JSON.stringify({industry:$("industry").value.trim(),location:$("location").value.trim(),maxResultCount:Number($("limit").value)})});
       const data=await response.json();if(!response.ok)throw new Error(data.error||"Search failed. Try again.");
       const incoming=(data.places||[]).map(p=>({id:p.id,name:p.name||"Unnamed business",type:$("industry").value.trim(),phone:p.phone||"",address:p.address||"",websiteUri:p.websiteUri||"",googleMapsUri:p.googleMapsUri||""}));
       const known=new Set(leads.map(x=>x.id));incoming.forEach(x=>{if(!known.has(x.id))leads.push(x)});
       activeFilter="all";document.querySelectorAll(".chip").forEach(b=>b.classList.toggle("active",b.dataset.filter==="all"));render();
       showMessage("Found "+incoming.length+" map listings. "+incoming.filter(x=>!x.websiteUri).length+" have no website listed in OpenStreetMap.","show");
       if(!incoming.length)showMessage("No results returned. Try a broader search or nearby area.","show");
-    }catch(err){showMessage(err.message,"error")}finally{btn.disabled=false;btn.textContent="Search leads ↗"}
+    }catch(err){showMessage(err.name==="AbortError"?"Search took too long. The public map provider may be busy. Please wait 30 seconds and try again.":err.message,"error")}finally{clearTimeout(requestTimer);btn.disabled=false;btn.textContent="Search leads ↗"}
   });
   document.querySelectorAll(".chip").forEach(b=>b.addEventListener("click",()=>{activeFilter=b.dataset.filter;document.querySelectorAll(".chip").forEach(x=>x.classList.toggle("active",x===b));render()}));
   $("clearBtn").addEventListener("click",()=>{leads=[];render();$("message").className="message"});
