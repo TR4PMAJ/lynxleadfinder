@@ -42,7 +42,7 @@ No `.dev.vars` file is required.
 - Search coverage depends on what OpenStreetMap contributors have mapped. It is not a complete business directory.
 - “No website listed” means no website tag was present in the returned map record. It does not prove the business has no website.
 - Common categories include barbers, salons, restaurants, cafes, auto repair, plumbers, electricians, dentists and gyms. Other terms use a name match and may return fewer relevant results.
-- Public community endpoints are shared resources and may rate-limit or temporarily reject requests. Avoid rapid repeated searches or bulk automated querying.
+- The search tries the global Private.coffee Overpass instance first and the FOSSGIS instance as a fallback for server errors. Public community endpoints are shared resources and may rate-limit or temporarily reject requests. If rate-limited, wait at least 30 seconds before trying again; avoid rapid repeated searches or bulk automated querying.
 - Results are held in browser memory and cleared when the page is refreshed. CSV export is only for the current session.
 
 ## Attribution and licensing
