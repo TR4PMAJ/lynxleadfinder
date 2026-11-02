@@ -12,10 +12,13 @@ A small-business prospecting dashboard using OpenStreetMap community data and Cl
 
 ## Deploy to Cloudflare Pages
 
-1. Connect this GitHub repository to a Cloudflare Pages project.
+1. In Cloudflare, create or open a **Pages** project connected to this GitHub repository (not a Workers project).
 2. Select the `main` branch.
-3. Leave the build command blank and set the output directory to `/`.
-4. Deploy. No API key, secret, or billing configuration is needed.
+3. Set the framework preset to **None**.
+4. Leave the build command blank and set the build output directory to `.` (the repository root).
+5. Save and deploy. No API key, secret, or billing configuration is needed.
+
+**Important:** Do not use `npx wrangler deploy` as the build or deploy command. This repository is a Pages project with Pages Functions. Cloudflare Pages handles Git deployments automatically; for CLI deployment use `npx wrangler pages deploy . --project-name <your-pages-project-name>`.
 
 The `functions/api/search.js` file handles requests to `/api/search`.
 
